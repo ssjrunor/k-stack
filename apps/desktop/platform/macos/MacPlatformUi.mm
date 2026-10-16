@@ -1,34 +1,28 @@
 /*
  * Author: Runor Ewhro
- * Description: keeps a borderless material window attached just below a
- *              transparent Qt Quick window, using Liquid Glass when built
- *              with a macOS 26 SDK on macOS 26 or later and a behind-window
- *              blur otherwise, so Qt's own view hierarchy is never touched;
- *              QML drives its opacity and scale during open and close.
+ * Description: keeps a borderless material window attached just below the
+ *              transparent panel, using Liquid Glass when built with a macOS
+ *              26 SDK on macOS 26 or later and a behind-window blur otherwise,
+ *              so Qt's own view hierarchy is never touched; the panel's open
+ *              and close animation scales and fades it.
  */
-#include "NativeMaterial.hpp"
+#include "MacPlatformUi.hpp"
 
 #import <AppKit/AppKit.h>
 
 #include <QSurfaceFormat>
 #include <QWindow>
 
-#include <memory>
-#include <unordered_map>
-
 namespace kstack::desktop {
 
-namespace {
-struct Backdrop {
+struct MacPlatformUi::Backdrop {
     NSPanel* panel = nil;
     qreal opacity = 1.0;
     qreal scale = 1.0;
 };
 
-std::unordered_map<QWindow*, std::shared_ptr<Backdrop>>& backdrops() {
-    static std::unordered_map<QWindow*, std::shared_ptr<Backdrop>> registry;
-    return registry;
-}
+namespace {
+using Backdrop = MacPlatformUi::Backdrop;
 
 // Qt may replace the native window behind a QWindow, so look it up each time
 NSWindow* hostWindowOf(QWindow* window) {
@@ -57,12 +51,16 @@ NSImage* roundedMask(CGFloat radius) {
 // NSGlassEffectView arrived in macOS 26, but macOS runs apps linked against an
 // older SDK in compatibility mode, where the glass draws nothing; use it only
 // when this build saw a macOS 26 SDK and the running system has it
-NSView* makeMaterialView(NSRect bounds, CGFloat radius, NativeMaterial* material) {
+NSView* makeMaterialView(NSRect bounds, CGFloat radius) {
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
     if (Class glassClass = NSClassFromString(@"NSGlassEffectView")) {
         NSView* glass = [[glassClass alloc] initWithFrame:bounds];
         [glass setValue:@(radius) forKey:@"cornerRadius"];
-        *material = NativeMaterial::Glass;
+        // regular glass with a window-colored tint keeps text readable over
+        // busy wallpapers; the system color follows light and dark on its own
+        [glass setValue:@0 forKey:@"style"];
+        [glass setValue:[NSColor.windowBackgroundColor colorWithAlphaComponent:0.55]
+                 forKey:@"tintColor"];
         return glass;
     }
 #endif
@@ -71,7 +69,6 @@ NSView* makeMaterialView(NSRect bounds, CGFloat radius, NativeMaterial* material
     blur.blendingMode = NSVisualEffectBlendingModeBehindWindow;
     blur.state = NSVisualEffectStateActive;
     blur.maskImage = roundedMask(radius);
-    *material = NativeMaterial::Blur;
     return blur;
 }
 
@@ -120,10 +117,19 @@ void detach(const std::shared_ptr<Backdrop>& backdrop) {
 }
 } // namespace
 
-NativeMaterial attachNativeMaterial(QWindow* window, qreal cornerRadius) {
-    if (!window) {
-        return NativeMaterial::None;
+MacPlatformUi::MacPlatformUi(QObject* parent) : PlatformUi(parent) {}
+
+MacPlatformUi::~MacPlatformUi() {
+    if (backdrop_) {
+        detach(backdrop_);
     }
+}
+
+bool MacPlatformUi::attachMaterial(QWindow* window, qreal cornerRadius) {
+    if (!window || backdrop_) {
+        return false;
+    }
+    window_ = window;
     // Qt Quick only clears to transparent when the surface carries alpha
     QSurfaceFormat format = window->format();
     format.setAlphaBufferSize(8);
@@ -143,15 +149,15 @@ NativeMaterial attachNativeMaterial(QWindow* window, qreal cornerRadius) {
     panel.hasShadow = YES;
     panel.ignoresMouseEvents = YES;
     panel.hidesOnDeactivate = NO;
-    NativeMaterial material = NativeMaterial::None;
-    panel.contentView = makeMaterialView(bounds, cornerRadius, &material);
+    panel.contentView = makeMaterialView(bounds, cornerRadius);
+    backdrop_ = backdrop;
 
     const auto follow = [window, backdrop] {
         if (window->isVisible()) {
             attachBelow(window, backdrop);
         }
     };
-    QObject::connect(window, &QWindow::visibleChanged, window, [window, backdrop](bool visible) {
+    connect(window, &QWindow::visibleChanged, this, [window, backdrop](bool visible) {
         if (!visible) {
             detach(backdrop);
             return;
@@ -165,37 +171,42 @@ NativeMaterial attachNativeMaterial(QWindow* window, qreal cornerRadius) {
             }
         });
     });
-    QObject::connect(window, &QWindow::xChanged, window, follow);
-    QObject::connect(window, &QWindow::yChanged, window, follow);
-    QObject::connect(window, &QWindow::widthChanged, window, follow);
-    QObject::connect(window, &QWindow::heightChanged, window, follow);
-    QObject::connect(window, &QObject::destroyed, [window, backdrop] {
-        detach(backdrop);
-        backdrops().erase(window);
+    connect(window, &QWindow::xChanged, this, follow);
+    connect(window, &QWindow::yChanged, this, follow);
+    connect(window, &QWindow::widthChanged, this, follow);
+    connect(window, &QWindow::heightChanged, this, follow);
+    connect(window, &QObject::destroyed, this, [this] {
+        detach(backdrop_);
+        backdrop_.reset();
+        window_ = nullptr;
     });
-    backdrops()[window] = backdrop;
-    return material;
+    setNativeMaterial(true);
+    return true;
 }
 
-NativeMaterialBridge::NativeMaterialBridge(QWindow* window, QObject* parent)
-    : QObject(parent), window_(window) {}
-
-void NativeMaterialBridge::setReveal(qreal opacity, qreal scale) {
-    const auto found = backdrops().find(window_);
-    if (found == backdrops().end()) {
+void MacPlatformUi::setReveal(qreal opacity, qreal scale) {
+    if (!backdrop_ || !window_) {
         return;
     }
-    found->second->opacity = opacity;
-    found->second->scale = scale;
+    backdrop_->opacity = opacity;
+    backdrop_->scale = scale;
     if (window_->isVisible()) {
         if (NSWindow* host = hostWindowOf(window_)) {
-            applyReveal(host, found->second);
+            applyReveal(host, backdrop_);
         }
     }
 }
 
-bool NativeMaterialBridge::reduceMotion() const {
+bool MacPlatformUi::reduceMotion() const {
     return NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+}
+
+// Qt's palette reports the pale text-selection blue, not the accent itself
+QColor MacPlatformUi::accentColor() const {
+    NSColor* accent = [NSColor.controlAccentColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    return QColor::fromRgbF(static_cast<float>(accent.redComponent),
+                            static_cast<float>(accent.greenComponent),
+                            static_cast<float>(accent.blueComponent));
 }
 
 } // namespace kstack::desktop

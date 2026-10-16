@@ -13,7 +13,7 @@ namespace kstack::platform {
 class QtClipboardMonitor final : public IClipboardMonitor {
 public:
     ~QtClipboardMonitor() override;
-    [[nodiscard]] bool start(TextCallback onText) override;
+    [[nodiscard]] bool start(TextCallback onText, AccessCallback onAccessChanged = {}) override;
     void stop() override;
 
 private:

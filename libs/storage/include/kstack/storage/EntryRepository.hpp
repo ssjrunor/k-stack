@@ -1,22 +1,29 @@
+/*
+ * Author: Runor Ewhro
+ * Description: exposes durable clipboard entries through the core store interface.
+ */
 #pragma once
 
 #include <kstack/storage/Database.hpp>
-#include <kstack/storage/EncryptionProvider.hpp>
+#include <kstack/core/IHistoryStore.hpp>
 
 #include <cstdint>
-#include <string_view>
+#include <vector>
 
 namespace kstack::storage {
 
-// The repository only accepts encrypted payloads through its provider.
-class EntryRepository {
+// SQLCipher encrypts the entire database, including hash indexes and text.
+class EntryRepository final : public core::IHistoryStore {
 public:
-    EntryRepository(Database& database, EncryptionProvider& encryption) noexcept;
-    void insertText(std::string_view text, std::int64_t capturedAtUnixMs);
+    explicit EntryRepository(Database& database) noexcept;
+    [[nodiscard]] std::vector<core::ClipboardEntry> loadAll() override;
+    [[nodiscard]] std::uint64_t record(const core::ClipboardEntry& entry) override;
+    void updateMetadata(std::span<const core::ClipboardEntry> entries) override;
+    void remove(std::uint64_t id) override;
+    void clear() override;
 
 private:
     Database& database_;
-    EncryptionProvider& encryption_;
 };
 
 } // namespace kstack::storage

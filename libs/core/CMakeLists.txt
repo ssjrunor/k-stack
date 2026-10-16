@@ -1,10 +1,11 @@
 add_library(kstack_core STATIC
   src/ClipboardService.cpp
+  src/ContentClassifier.cpp
   src/CapturePipeline.cpp
   src/HistoryService.cpp
   src/SearchService.cpp
   src/RetentionPolicy.cpp
 )
 target_include_directories(kstack_core PUBLIC include)
-target_link_libraries(kstack_core PUBLIC kstack_algorithms)
+target_link_libraries(kstack_core PUBLIC kstack_algorithms codelang::codelang)
 kstack_enable_warnings(kstack_core)

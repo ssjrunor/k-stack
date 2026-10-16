@@ -9,10 +9,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ qt6-base-dev qt6-declarative-dev libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ qt6-base-dev qt6-declarative-dev
       - name: Configure
         run: cmake --preset dev
       - name: Build
         run: cmake --build --preset dev
       - name: Test
         run: ctest --preset dev
+
+  macos-encrypted-history:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: brew install cmake ninja qt sqlcipher
+      - name: Configure
+        run: cmake --preset dev -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" -DKSTACK_PERSISTENCE=ON -DKSTACK_ENABLE_TRANSLATION=OFF
+      - name: Build
+        run: cmake --build --preset dev
+      - name: Test
+        run: ctest --preset dev --output-on-failure

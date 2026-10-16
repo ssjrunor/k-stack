@@ -19,8 +19,11 @@ QtClipboardMonitor::~QtClipboardMonitor() { stop(); }
 
 // prefer a URL representation when one is present, then fall back to plain
 // text so copied browser links are recorded as their destination
-bool QtClipboardMonitor::start(TextCallback onText) {
+bool QtClipboardMonitor::start(TextCallback onText, AccessCallback onAccessChanged) {
     stop();
+    // Qt does not expose a portable clipboard permission state. A failure to
+    // obtain the clipboard is reported by the return value at startup.
+    static_cast<void>(onAccessChanged);
     auto* clipboard = QGuiApplication::clipboard();
     if (!clipboard) {
         return false;

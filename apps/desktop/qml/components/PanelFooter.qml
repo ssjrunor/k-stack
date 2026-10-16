@@ -1,8 +1,9 @@
 /*
  * Author: Runor Ewhro
  * Description: shows when the session started, or the size limit as it
- *              nears, beside clickable key hints for the panel's main
- *              actions, so mouse users can do what the keys do.
+ *              nears, beside clickable key hints for the panel's actions:
+ *              copy, the selected entry's suggested action, the preview,
+ *              and pausing capture.
  */
 import QtQuick
 import "../theme" as Style
@@ -12,8 +13,12 @@ Item {
     property string note: ""
     property bool capturing: true
     property bool hasItems: true
+    property bool previewVisible: false
+    property string actionLabel: ""
+    property bool reduceMotion: false
     signal copyRequested()
-    signal removeRequested()
+    signal actionRequested()
+    signal previewRequested()
     signal pauseRequested()
     implicitHeight: theme.footerHeight
 
@@ -30,13 +35,17 @@ Item {
     Text {
         anchors.left: parent.left
         anchors.leftMargin: theme.sideMargin
+        anchors.right: hints.left
+        anchors.rightMargin: 12
         anchors.verticalCenter: parent.verticalCenter
         text: root.note
         color: colors.muted
         font.pixelSize: theme.metaSize
+        elide: Text.ElideRight
     }
 
     Row {
+        id: hints
         anchors.right: parent.right
         anchors.rightMargin: theme.sideMargin - 6
         anchors.verticalCenter: parent.verticalCenter
@@ -44,14 +53,19 @@ Item {
 
         Repeater {
             model: [
-                { action: "copy", key: "↩", label: "Copy", needsItems: true },
-                { action: "remove", key: "⌘⌫", label: "Remove", needsItems: true },
-                { action: "pause", key: "⌘P", label: root.capturing ? "Pause" : "Resume", needsItems: false }
+                { action: "copy", key: platformUi.keyText("Return"), label: "Copy", needsItems: true, shown: true },
+                { action: "suggest", key: platformUi.keyText("Ctrl+O"), label: root.actionLabel, needsItems: true,
+                  shown: root.actionLabel.length > 0 },
+                { action: "preview", key: platformUi.keyText("Ctrl+Y"), label: root.previewVisible ? "Hide preview" : "Preview",
+                  needsItems: false, shown: true },
+                { action: "pause", key: platformUi.keyText("Ctrl+P"), label: root.capturing ? "Pause" : "Resume",
+                  needsItems: false, shown: true }
             ]
             delegate: Rectangle {
                 id: button
                 required property var modelData
                 readonly property bool available: !modelData.needsItems || root.hasItems
+                visible: modelData.shown
                 width: hint.implicitWidth + 12
                 height: 24
                 radius: 7
@@ -60,7 +74,10 @@ Item {
                 scale: area.pressed && available ? 0.94 : 1
                 Behavior on color { ColorAnimation { duration: theme.hoverMs } }
                 Behavior on opacity { NumberAnimation { duration: theme.hoverMs } }
-                Behavior on scale { SpringAnimation { spring: 9; damping: 0.4; epsilon: 0.002 } }
+                Behavior on scale {
+                    enabled: !root.reduceMotion
+                    SpringAnimation { spring: 9; damping: 0.4; epsilon: 0.002 }
+                }
 
                 Row {
                     id: hint
@@ -98,10 +115,13 @@ Item {
                         if (!button.available) {
                             return;
                         }
-                        if (button.modelData.action === "copy") {
+                        const action = button.modelData.action;
+                        if (action === "copy") {
                             root.copyRequested();
-                        } else if (button.modelData.action === "remove") {
-                            root.removeRequested();
+                        } else if (action === "suggest") {
+                            root.actionRequested();
+                        } else if (action === "preview") {
+                            root.previewRequested();
                         } else {
                             root.pauseRequested();
                         }

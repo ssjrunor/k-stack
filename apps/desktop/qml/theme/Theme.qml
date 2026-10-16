@@ -10,9 +10,16 @@ QtObject {
     readonly property int panelWidth: 600
     readonly property int panelRadius: 22
     readonly property int searchHeight: 58
+    readonly property int filterHeight: 40
+    readonly property int previewWidth: 340
+    readonly property int sectionHeight: 28
+    readonly property int detailedRowHeight: 52
+    readonly property int glyphSize: 16
     readonly property int footerHeight: 34
     readonly property int listPadding: 8
     readonly property int rowHeight: 38
+    // added to a row that shows a subtext line
+    readonly property int subtextHeight: 16
     readonly property int rowRadius: 12
     readonly property int visibleRows: 9
     readonly property int sideMargin: 20
@@ -22,7 +29,7 @@ QtObject {
     readonly property int codeSize: 13
     readonly property int metaSize: 12
     readonly property int keySize: 11
-    readonly property string monoFamily: "Menlo"
+    readonly property string monoFamily: platformUi.monoFamily
 
     // motion: the panel springs open from slightly small with a soft
     // overshoot, and leaves faster than it arrives

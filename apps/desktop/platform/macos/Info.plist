@@ -9,5 +9,8 @@
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>Clipboard History opens Calendar on the date you copied.</string>
+  <key>NSRemindersFullAccessUsageDescription</key><string>Clipboard History adds reminders for dates and times you copy.</string>
+  <key>NSRemindersUsageDescription</key><string>Clipboard History adds reminders for dates and times you copy.</string>
 </dict>
 </plist>

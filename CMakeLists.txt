@@ -18,11 +18,17 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(cmake/CompilerWarnings.cmake)
 include(cmake/Dependencies.cmake)
+include(cmake/CodeLanguage.cmake)
+include(cmake/Translation.cmake)
+include(cmake/HighlightJs.cmake)
 
 add_subdirectory(libs/algorithms)
 add_subdirectory(libs/core)
-add_subdirectory(libs/storage)
+if(KSTACK_HAS_PERSISTENCE)
+  add_subdirectory(libs/storage)
+endif()
 add_subdirectory(libs/platform)
+add_subdirectory(libs/translation)
 add_subdirectory(apps/desktop)
 
 include(CTest)

@@ -1,75 +1,121 @@
 /*
   Author: Runor Ewhro
-  Description: wires the desktop services, QML history window, and background
-               menu bar control into one running clipboard application.
+  Description: wires the desktop services, the platform layer, the QML
+               history window, and the tray control into one running
+               clipboard application.
 */
 #include "Application.hpp"
 
-#ifdef Q_OS_MACOS
-#include "macos/NativeMaterial.hpp"
+#include "platform/PlatformFactory.hpp"
+#ifdef KSTACK_HAS_PERSISTENCE
+#include "platform/macos/HistoryKeyStore.hpp"
 #endif
 
-#include <QAction>
 #include <QApplication>
-#include <QIcon>
-#include <QPainter>
-#include <QPixmap>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QMessageBox>
 #include <QQmlContext>
+#include <QStandardPaths>
+#include <QSystemTrayIcon>
 #include <QUrl>
+
+#include <algorithm>
+#include <exception>
 
 namespace kstack::desktop {
 
-namespace {
-// draw the menu bar glyph as a stack of three slabs; the top slab carries the
-// capture state: filled while capturing, dashed while paused, struck through
-// when the clipboard cannot be read
-QIcon makeTrayIcon(bool capturing, bool blocked) {
-    constexpr qreal scale = 2.0;
-    QPixmap image(QSize(18, 18) * scale);
-    image.setDevicePixelRatio(scale);
-    image.fill(Qt::transparent);
-    QPainter painter(&image);
-    painter.setRenderHint(QPainter::Antialiasing);
-    QPen pen(Qt::black, 1.4);
-    painter.setPen(pen);
-    const QRectF top(3, 2.5, 12, 3.6);
-    const QRectF middle(3, 7.5, 12, 3.6);
-    const QRectF bottom(3, 12.5, 12, 3.6);
-    painter.drawRoundedRect(middle, 1.1, 1.1);
-    painter.drawRoundedRect(bottom, 1.1, 1.1);
-    if (blocked) {
-        painter.drawLine(QPointF(5.5, 1.5), QPointF(12.5, 6.0));
-    } else if (capturing) {
-        painter.setBrush(Qt::black);
-        painter.drawRoundedRect(top, 1.1, 1.1);
-    } else {
-        pen.setDashPattern({1.4, 1.2});
-        painter.setPen(pen);
-        painter.drawRoundedRect(top, 1.1, 1.1);
-    }
-    painter.end();
-    QIcon icon(image);
-    icon.setIsMask(true);
-    return icon;
-}
-} // namespace
-
 Application::Application()
-    : clipboardService_(history_), capturePipeline_(clipboardService_), searchService_(history_),
-      historyModel_(history_), searchModel_(searchService_),
+    : tieBreaker_(highlightJs_), codeHighlighter_(highlightJs_), clipboardService_(history_), capturePipeline_(clipboardService_), searchService_(history_),
+      historyModel_(history_), searchModel_(searchService_, subtexts_),
       clipboardController_(capturePipeline_, historyModel_, searchModel_),
-      historyController_(history_, historyModel_, searchModel_), searchController_(searchModel_),
-      settingsController_(clipboardController_) {}
+      historyController_(history_, subtexts_, historyModel_, searchModel_),
+      searchController_(searchModel_), settingsController_(clipboardController_),
+      translation_(history_, subtexts_), linkTitles_(history_, subtexts_), platformUi_(createPlatformUi()),
+      systemServices_(createSystemServices()),
+      trayMenu_(history_, historyModel_, historyController_, settingsController_) {
+    clipboardController_.setStorageErrorListener([this](const QString& message) {
+        settingsController_.storageFailed(message);
+    });
+    // close calls on a code snippet's language go to highlight.js
+    history_.setCodeLanguageTieBreaker([this](std::string_view text, const auto& first, const auto& second) {
+        return tieBreaker_.choose(text, first, second);
+    });
+    // each new entry may earn a subtext: code shows its language, text in
+    // another language its translation, and a link its page title
+    clipboardController_.setCaptureListener([this] {
+        const auto& entries = history_.entries();
+        subtexts_.retain(entries);
+        if (entries.empty()) {
+            return;
+        }
+        const core::ClipboardEntry& entry = entries.front();
+        if (!entry.codeLanguage.empty()) {
+            subtexts_.set(entry.id, QString::fromStdString(entry.codeLanguage));
+        }
+        translation_.entryCaptured(entry);
+        linkTitles_.entryCaptured(entry);
+    });
+}
 
 // load the history window hidden, expose it through the tray menu, then start
 // capture; a failed monitor start opens the window so the state is visible
-bool Application::start() {
+bool Application::start(const QString& stressDirectory, const std::string& stressKeyService) {
     QApplication::setQuitOnLastWindowClosed(false);
+#ifndef KSTACK_HAS_PERSISTENCE
+    Q_UNUSED(stressDirectory)
+    Q_UNUSED(stressKeyService)
+#endif
+#ifdef KSTACK_HAS_PERSISTENCE
+    try {
+        const QString directory = stressDirectory.isEmpty()
+                                      ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                                      : stressDirectory;
+        if (directory.isEmpty() || !QDir().mkpath(directory)) {
+            throw std::runtime_error("Cannot create the history directory");
+        }
+        if (!QFile::setPermissions(directory, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                                 QFileDevice::ExeOwner)) {
+            throw std::runtime_error("Cannot restrict the history directory");
+        }
+        const QString path = QDir(directory).filePath(QStringLiteral("history.db"));
+        const bool existingHistory = QFileInfo::exists(path) || QFileInfo::exists(path + QStringLiteral("-wal")) ||
+                                     QFileInfo::exists(path + QStringLiteral("-shm"));
+        auto key = stressKeyService.empty() ? historyDatabaseKey(existingHistory)
+                                           : historyDatabaseKey(existingHistory, stressKeyService);
+        try {
+            database_ = std::make_unique<storage::Database>(path.toStdString(), key);
+        } catch (...) {
+            std::fill(key.begin(), key.end(), 0);
+            throw;
+        }
+        std::fill(key.begin(), key.end(), 0);
+        if (!QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+            throw std::runtime_error("Cannot restrict the history database file");
+        }
+        store_ = std::make_unique<storage::EntryRepository>(*database_);
+        history_.attachStore(*store_);
+        historyModel_.refresh();
+        searchModel_.refresh();
+    } catch (const std::exception& error) {
+        QMessageBox::critical(nullptr, QStringLiteral("History unavailable"),
+                              QString::fromUtf8(error.what()));
+        return false;
+    }
+#endif
     engine_.rootContext()->setContextProperty("historyModel", &historyModel_);
     engine_.rootContext()->setContextProperty("searchModel", &searchModel_);
     engine_.rootContext()->setContextProperty("historyController", &historyController_);
     engine_.rootContext()->setContextProperty("searchController", &searchController_);
     engine_.rootContext()->setContextProperty("settingsController", &settingsController_);
+    engine_.rootContext()->setContextProperty("viewOptions", &viewOptions_);
+    engine_.rootContext()->setContextProperty("translationController", &translation_);
+    engine_.rootContext()->setContextProperty("codeHighlighter", &codeHighlighter_);
+    // QML always gets both platform objects and reads their capability
+    // flags, so it never needs to know which system it runs on
+    engine_.rootContext()->setContextProperty("platformUi", platformUi_.get());
+    engine_.rootContext()->setContextProperty("systemServices", systemServices_.get());
     engine_.rootContext()->setContextProperty("summonMode",
                                               QSystemTrayIcon::isSystemTrayAvailable());
     engine_.load(QUrl(QStringLiteral("qrc:/KStack/qml/Main.qml")));
@@ -80,59 +126,19 @@ bool Application::start() {
     if (!historyWindow_) {
         return false;
     }
-#ifdef Q_OS_MACOS
-    // the panel's corner radius comes from QML so the glass and the rows
-    // inside it stay concentric
+    systemServices_->setWindow(historyWindow_);
+    // a summoned panel gets the system material when the platform has one;
+    // the corner radius comes from QML so the material and rows stay concentric
     if (QSystemTrayIcon::isSystemTrayAvailable()) {
-        const qreal radius = historyWindow_->property("cornerRadius").toReal();
-        const NativeMaterial material = attachNativeMaterial(historyWindow_, radius);
-        if (material != NativeMaterial::None) {
-            materialBridge_ = std::make_unique<NativeMaterialBridge>(historyWindow_);
-            historyWindow_->setProperty("materialBridge", QVariant::fromValue(materialBridge_.get()));
-            historyWindow_->setProperty("nativeMaterial", true);
-        }
+        platformUi_->attachMaterial(historyWindow_, historyWindow_->property("cornerRadius").toReal());
     }
-#endif
 
-    auto* statusAction = trayMenu_.addAction(settingsController_.captureStatus());
-    statusAction->setEnabled(false);
-    trayMenu_.addSeparator();
-    auto* openAction = trayMenu_.addAction(QStringLiteral("Open history"));
-    QObject::connect(openAction, &QAction::triggered, &trayMenu_, [this] {
+    QObject::connect(&trayMenu_, &TrayMenu::openHistoryRequested, &trayMenu_, [this] {
         historyWindow_->show();
         historyWindow_->raise();
         historyWindow_->requestActivate();
     });
-    auto* captureAction = trayMenu_.addAction(QString());
-    QObject::connect(captureAction, &QAction::triggered, &trayMenu_, [this] {
-        settingsController_.setCaptureEnabled(!settingsController_.captureEnabled());
-    });
-    auto* clearAction = trayMenu_.addAction(QStringLiteral("Clear session"));
-    QObject::connect(clearAction, &QAction::triggered, &trayMenu_,
-                     [this] { historyController_.clear(); });
-    trayMenu_.addSeparator();
-    auto* quitAction = trayMenu_.addAction(QStringLiteral("Quit"));
-    QObject::connect(quitAction, &QAction::triggered, &trayMenu_, [] { QApplication::quit(); });
-
-    // keep the status line, the capture action's verb, and the glyph in step
-    // with the controller so the menu never describes a stale state
-    const auto showCaptureState = [this, statusAction, captureAction] {
-        const bool capturing = settingsController_.captureEnabled();
-        const bool blocked = settingsController_.captureBlocked();
-        statusAction->setText(settingsController_.captureStatus());
-        captureAction->setText(capturing ? QStringLiteral("Pause capture")
-                               : blocked ? QStringLiteral("Try again")
-                                         : QStringLiteral("Resume capture"));
-        trayIcon_.setIcon(makeTrayIcon(capturing, blocked));
-        trayIcon_.setToolTip(settingsController_.captureStatus());
-    };
-    QObject::connect(&settingsController_, &SettingsController::captureStatusChanged, &trayMenu_,
-                     showCaptureState);
-    showCaptureState();
-    trayIcon_.setContextMenu(&trayMenu_);
-    if (QSystemTrayIcon::isSystemTrayAvailable()) {
-        trayIcon_.show();
-    } else {
+    if (!trayMenu_.show()) {
         QApplication::setQuitOnLastWindowClosed(true);
         historyWindow_->show();
     }
@@ -142,6 +148,15 @@ bool Application::start() {
         historyWindow_->raise();
         historyWindow_->requestActivate();
     }
+#ifdef KSTACK_ENABLE_STRESS_PROFILE
+    if (!stressDirectory.isEmpty()) {
+        QFile ready(QDir(stressDirectory).filePath(QStringLiteral("ready")));
+        if (!ready.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+            ready.write(settingsController_.captureEnabled() ? "capturing" : "unavailable") < 0) {
+            return false;
+        }
+    }
+#endif
     return true;
 }
 

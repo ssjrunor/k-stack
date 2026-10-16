@@ -14,8 +14,11 @@ namespace kstack::platform {
 class IClipboardMonitor {
 public:
     using TextCallback = std::function<void(std::string)>;
+    using AccessCallback = std::function<void(bool)>;
     virtual ~IClipboardMonitor() = default;
-    [[nodiscard]] virtual bool start(TextCallback onText) = 0;
+    // Reports changes in access while observation is running. A false start
+    // still reports its initial state through the return value.
+    [[nodiscard]] virtual bool start(TextCallback onText, AccessCallback onAccessChanged = {}) = 0;
     virtual void stop() = 0;
 };
 

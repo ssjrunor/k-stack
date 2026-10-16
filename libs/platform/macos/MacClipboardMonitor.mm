@@ -17,6 +17,17 @@
 
 namespace kstack::platform {
 
+namespace {
+bool accessDenied(NSPasteboard* pasteboard) {
+#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150400
+    if (@available(macOS 15.4, *)) {
+        return pasteboard.accessBehavior == NSPasteboardAccessBehaviorAlwaysDeny;
+    }
+#endif
+    return false;
+}
+} // namespace
+
 class MacClipboardMonitor final : public IClipboardMonitor {
 public:
     MacClipboardMonitor(NSPasteboard* pasteboard, std::chrono::milliseconds interval)
@@ -26,21 +37,16 @@ public:
 
     // start from the current ownership version, so old clipboard contents are
     // not treated as a new copy when capture is enabled or resumed
-    [[nodiscard]] bool start(TextCallback onText) override {
+    [[nodiscard]] bool start(TextCallback onText, AccessCallback onAccessChanged = {}) override {
         stop();
         if (!pasteboard_) {
             return false;
         }
-#if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150400
-        if (@available(macOS 15.4, *)) {
-            if (pasteboard_.accessBehavior == NSPasteboardAccessBehaviorAlwaysDeny) {
-                return false;
-            }
-        }
-#endif
         state_ = std::make_shared<State>();
         state_->callback = std::move(onText);
+        state_->accessCallback = std::move(onAccessChanged);
         state_->pasteboard = pasteboard_;
+        state_->blocked = accessDenied(pasteboard_);
         state_->lastChangeCount = pasteboard_.changeCount;
         timer_ = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
         if (!timer_) {
@@ -53,7 +59,9 @@ public:
         dispatch_source_set_timer(timer_, dispatch_time(DISPATCH_TIME_NOW, period), period,
                                   period / 5);
         dispatch_resume(timer_);
-        return true;
+        // Keep the timer alive under an explicit denial so a later change in
+        // System Settings can resume capture without restarting the app.
+        return !state_->blocked;
     }
 
     // clear the callback before canceling the timer, since an already queued
@@ -61,6 +69,7 @@ public:
     void stop() override {
         if (state_) {
             state_->callback = {};
+            state_->accessCallback = {};
         }
         if (timer_) {
             dispatch_source_cancel(timer_);
@@ -72,8 +81,10 @@ public:
 private:
     struct State {
         TextCallback callback;
+        AccessCallback accessCallback;
         NSPasteboard* pasteboard = nil;
         NSInteger lastChangeCount = 0;
+        bool blocked = false;
     };
 
     // read only after the ownership version changes; this avoids repeated
@@ -81,6 +92,20 @@ private:
     static void poll(const std::shared_ptr<State>& state) {
         @autoreleasepool {
             NSPasteboard* pasteboard = state->pasteboard;
+            const bool blocked = accessDenied(pasteboard);
+            if (blocked != state->blocked) {
+                state->blocked = blocked;
+                // A change made while access was denied is not a new copy at
+                // the time access returns; start from the current version.
+                state->lastChangeCount = pasteboard.changeCount;
+                if (state->accessCallback) {
+                    state->accessCallback(!blocked);
+                }
+                return;
+            }
+            if (blocked) {
+                return;
+            }
             const NSInteger changeCount = pasteboard.changeCount;
             if (changeCount == state->lastChangeCount) {
                 return;

@@ -1,15 +1,21 @@
+/*
+ * Author: Runor Ewhro
+ * Description: owns a verified SQLCipher connection and versioned migrations.
+ */
 #pragma once
 
+#include <cstdint>
+#include <span>
 #include <string>
 
 struct sqlite3;
 
 namespace kstack::storage {
 
-// Opens an SQLite connection. Migrations are intentionally not automatic yet.
+// Opens and verifies a keyed SQLCipher database before applying migrations.
 class Database {
 public:
-    explicit Database(const std::string& path);
+    Database(const std::string& path, std::span<const std::uint8_t> key);
     ~Database();
     Database(const Database&) = delete;
     Database& operator=(const Database&) = delete;

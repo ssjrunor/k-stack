@@ -1,0 +1,6 @@
+#pragma once
+
+namespace kstack::storage {
+inline constexpr char kInitialMigration[] = R"kstack_sql(@KSTACK_INITIAL_MIGRATION@)kstack_sql";
+inline constexpr char kEntryMetadataMigration[] = R"kstack_sql(@KSTACK_ENTRY_METADATA_MIGRATION@)kstack_sql";
+} // namespace kstack::storage
