@@ -1,0 +1,7 @@
+{
+  "name": "k-stack",
+  "version-string": "0.1.0",
+  "description": "Privacy-focused desktop clipboard history",
+  "license": "MIT",
+  "dependencies": ["qtbase", "qtdeclarative", "sqlite3", "libsodium"]
+}

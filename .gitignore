@@ -1,0 +1,10 @@
+/build/
+/.cache/
+/.idea/
+/.vscode/
+*.user
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
+/settings
